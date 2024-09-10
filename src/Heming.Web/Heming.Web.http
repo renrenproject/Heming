@@ -1,0 +1,6 @@
+@HemingDetect.Web_HostAddress = http://localhost:5192
+
+GET {{HemingDetect.Web_HostAddress}}/Prediction/
+Accept: application/json
+
+###
