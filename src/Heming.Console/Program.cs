@@ -83,6 +83,7 @@ Size size;
 string configName = "appsettings";
 const string imgpath = "cache.jpg";
 string remoteurl;
+string predictionZone;
 Graphics captureGraphics;
 Bitmap captureBmp;
 Bitmap hookbmp;
@@ -101,10 +102,21 @@ try
     IConfigurationRoot configuration = new ConfigurationBuilder().AddJsonFile(configName + ".json").Build();
     Resolution.Initilize();
     debug = bool.Parse(configuration["Debug"]);
-    x = int.Parse(configuration["X"]);
-    y = int.Parse(configuration["Y"]);
+    predictionZone = configuration["PredictionZone"].Trim().ToLower();
+    if (predictionZone == "auto")
+    {
+        x = Resolution.DeviceWidth / 10;
+        y = Resolution.DeviceHeight / 10;
+        size = new Size(Resolution.DeviceWidth - x * 2, Resolution.DeviceHeight - y * 2);
+    }
+    else
+    {
+        string[] numbers = predictionZone.Split(',');
+        x = int.Parse(numbers[0]);
+        y = int.Parse(numbers[1]);
+        size = new Size(int.Parse(numbers[2]), int.Parse(numbers[3]));
+    }
     targetColorThreshold = double.Parse(configuration["TargetColorThreshold"]);
-    size = new System.Drawing.Size(int.Parse(configuration["W"]), int.Parse(configuration["H"]));
     hookingDelay = int.Parse(configuration["StartHookingDelayMs"]);
     pressShift = bool.Parse(configuration["PressShift"]);
     while (true)
@@ -234,7 +246,7 @@ while (!(fished > 20 && succeedrecord.Average() < 0.3))
             }
             avgarray[tested % avgarray.Length] = targetcolor;
             avgcolors[tested] = targetcolor;
-            if (targetcolor > avgarray.Average() * double.Max(avgmaxcolors.Average().Value * 0.85 / avgcolors.Average().Value, targetColorThreshold))
+            if (targetcolor > avgarray.Average() * double.Max(avgmaxcolors.Average().Value * 0.95 / avgcolors.Average().Value, targetColorThreshold))
             {
                 if (debug)
                 {
