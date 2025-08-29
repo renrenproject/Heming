@@ -11,6 +11,5 @@ namespace Heming
 
         public IList<PredictionResult> LocalPredicting(string imgpath);
         public IList<PredictionResult> LocalPredicting(Stream imgstream);
-        public IList<PredictionResult> RemotePredicting(string imgpath, string url);
     }
 }

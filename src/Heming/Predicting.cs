@@ -20,14 +20,6 @@ namespace Heming
             Session = session;
         }
 
-        public IList<PredictionResult> RemotePredicting(string imgpath, string url)
-        {
-            WebClient webClient = new WebClient();
-            byte[] res = webClient.UploadFile(url, imgpath);
-            string resjson = System.Text.Encoding.ASCII.GetString(res);
-            return JsonConvert.DeserializeObject<IList<PredictionResult>>(resjson);
-        }
-
         public IList<PredictionResult> LocalPredicting(Stream imgstream)
         {
             SixLabors.ImageSharp.Image image = SixLabors.ImageSharp.Image.Load(imgstream);
