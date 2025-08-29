@@ -2,8 +2,6 @@
 using Heming;
 using Heming.Console;
 using Microsoft.Extensions.Configuration;
-using NAudio.Wave;
-using System.Diagnostics.Metrics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
@@ -68,7 +66,7 @@ void Click(LeftRightMedium mef, UpDownClick udc)
 Console.WriteLine("Loading settings...");
 bool debug = false;
 bool pressShift = false;
-byte hookDetectMethod;
+byte enterPredictingMethod;
 int hookingDelay = 0;
 int tested = 0;
 int x;
@@ -81,10 +79,6 @@ double?[] avgcolors = new double?[Int16.MaxValue];
 double?[] avgmaxcolors = new double?[byte.MaxValue];
 float?[] succeedrecord = new float?[10];
 double targetColorThreshold = 0;
-double targetSoundThreshold = 0;
-double maxcolor = 0;
-double targetcolor = 0;
-double currentSoundLevel = 0;
 Size size;
 string configName = "appsettings";
 const string imgpath = "cache.jpg";
@@ -93,12 +87,9 @@ Graphics captureGraphics;
 Bitmap captureBmp;
 Bitmap hookbmp;
 Graphics hookGraphic;
-Rectangle hookposition;
 Predicting predicting = new Predicting();
-predicting.Session = new Microsoft.ML.OnnxRuntime.InferenceSession("HemingModel.onnx");
 PredictionResult predres;
-HootDetectMethod method = new HootDetectMethod();
-WasapiLoopbackCapture capture;
+PredictingMethod method = new PredictingMethod();
 
 if (args.Length > 0)
 {
@@ -113,19 +104,29 @@ try
     x = int.Parse(configuration["X"]);
     y = int.Parse(configuration["Y"]);
     targetColorThreshold = double.Parse(configuration["TargetColorThreshold"]);
-    targetSoundThreshold = double.Parse(configuration["TargetSoundThreshold"]);
     size = new System.Drawing.Size(int.Parse(configuration["W"]), int.Parse(configuration["H"]));
     hookingDelay = int.Parse(configuration["StartHookingDelayMs"]);
     pressShift = bool.Parse(configuration["PressShift"]);
     while (true)
     {
-        Console.WriteLine("Please hook detect method[1-3]:\r\n1:Visual; 2:Audio; 3:Both");
-        if (byte.TryParse(Console.ReadLine(), out hookDetectMethod))
+        Console.WriteLine("Please select predicting method[1-2]:\r\n1:Local; 2:Remote;");
+        if (byte.TryParse(Console.ReadLine(), out enterPredictingMethod))
         {
-            if (hookDetectMethod > 0 && hookDetectMethod <= 3)
+            if (enterPredictingMethod > 0 && enterPredictingMethod <= 2)
             {
-                method = (HootDetectMethod)hookDetectMethod;
-                Console.WriteLine($"Selected {method} detecting.");
+                method = (PredictingMethod)enterPredictingMethod;
+                switch (method)
+                {
+                    case PredictingMethod.Local:
+                        predicting.Session = new Microsoft.ML.OnnxRuntime.InferenceSession("HemingModel.onnx");
+                        break;
+                    case PredictingMethod.Remote:
+                        remoteurl = configuration["RemotePredictingUrl"];
+                        break;
+                    default:
+                        return;
+                }
+                Console.WriteLine($"Selected {method} predicting.");
                 break;
             }
         }
@@ -135,12 +136,6 @@ try
     captureGraphics = Graphics.FromImage(captureBmp);
     avgmaxcolors[0] = 0;
     succeedrecord[0] = 0;
-    if (((int)method & 2) == 2)    //Audio or Both
-    {
-        capture = new WasapiLoopbackCapture();
-        capture.DataAvailable += OnDataAvailable;
-        capture.StartRecording();
-    }
     Console.WriteLine("Load settings succeed.");
 }
 catch (Exception e)
@@ -170,14 +165,22 @@ while (!(fished > 20 && succeedrecord.Average() < 0.3))
     keybd_event(0x30, 0x0B, UpDown.Down, 0);
     Thread.Sleep(100);
     keybd_event(0x30, 0x0B, UpDown.Up, 0);
-    Thread.Sleep(5000);
+    Thread.Sleep(3000);
     captureGraphics.CopyFromScreen(x, y, 0, 0, size);
     captureBmp.Save(".\\" + imgpath, ImageFormat.Jpeg);
     succeedrecord[fished % succeedrecord.Length] = 0;
     try
     {
         IList<PredictionResult> predictions;
-        predictions = predicting.LocalPredicting(imgpath);
+        switch (method)
+        {
+            case PredictingMethod.Local:
+                predictions = predicting.LocalPredicting(imgpath);
+                break;
+            case PredictingMethod.Remote:
+                predictions = predicting.RemotePredicting(imgpath, remoteurl);
+                break;
+        }
 
         if (predictions == null || predictions.Count == 0)
         {
@@ -197,59 +200,49 @@ while (!(fished > 20 && succeedrecord.Average() < 0.3))
             Console.WriteLine($"Predicting error: {e}");
         continue;
     }
-    //Detected hook
-    if (predres.Probability > 0.02)
+    if (predres.Probability > 0.2)
     {
-        hookposition = new Rectangle(x + (int)(predres.BoundingBox.Left * size.Width)
+        //Detected hook
+        Rectangle hookposition = new Rectangle(x + (int)(predres.BoundingBox.Left * size.Width)
             , y + (int)(predres.BoundingBox.Top * size.Height)
             , (int)(size.Width * predres.BoundingBox.Width)
             , (int)(size.Height * predres.BoundingBox.Height));
-        if (((int)method & 1) == 1)
+        hookbmp = new Bitmap(hookposition.Width, hookposition.Height, PixelFormat.Format32bppArgb);
+        hookGraphic = Graphics.FromImage(hookbmp);
+        hookGraphic.CopyFromScreen(hookposition.Left, hookposition.Top, 0, 0, hookposition.Size);
+        double origcolor = CalculateAvgColor(hookbmp);
+        double maxcolor = 0;
+        if (debug)
         {
-            hookbmp = new Bitmap(hookposition.Width, hookposition.Height, PixelFormat.Format32bppArgb);
-            hookGraphic = Graphics.FromImage(hookbmp);
-            hookGraphic.CopyFromScreen(hookposition.Left, hookposition.Top, 0, 0, hookposition.Size);
-            double origcolor = CalculateAvgColor(hookbmp);
-            maxcolor = 0;
-            if (debug)
-            {
-                hookbmp.Save("hook.jpg");
-                Console.WriteLine("\rorigcolor: " + origcolor);
-            }
+            hookbmp.Save("hook.jpg");
+            Console.WriteLine("origcolor: " + origcolor);
         }
-    
         DateTime fishtime = DateTime.Now;
         if (hookingDelay > 0)
             Thread.Sleep(hookingDelay);
         for (int i = 0; i < avgarray.Length; i++)
             avgarray[i] = null;
-        while (DateTime.Now - fishtime < new TimeSpan(0, 0, 25))
+        while (DateTime.Now - fishtime < new TimeSpan(0, 0, 20))
         {
-            if (((int)method & 1) == 1)
+            hookGraphic.CopyFromScreen(hookposition.Left, hookposition.Top, 0, 0, hookposition.Size);
+            double targetcolor = CalculateAvgColor(hookbmp);
+            if (targetcolor > maxcolor)
             {
-                hookGraphic.CopyFromScreen(hookposition.Left, hookposition.Top, 0, 0, hookposition.Size);
-                targetcolor = CalculateAvgColor(hookbmp);
-                if (targetcolor > maxcolor)
-                {
-                    maxcolor = targetcolor;
-                    if (debug)
-                        Console.WriteLine("\rmaxcolor: " + maxcolor);
-                }
-                avgarray[tested % avgarray.Length] = targetcolor;
-                avgcolors[tested] = targetcolor;
+                maxcolor = targetcolor;
+                if (debug)
+                    Console.WriteLine("maxcolor: " + maxcolor);
             }
-
-            //Hooked
-            if (((((int)method & 1) == 1) && (targetcolor > avgarray.Average() * double.Max(avgmaxcolors.Average().Value * 0.85 / avgcolors.Average().Value, targetColorThreshold)))
-                || ((((int)method & 2) == 2) && currentSoundLevel > targetSoundThreshold))
+            avgarray[tested % avgarray.Length] = targetcolor;
+            avgcolors[tested] = targetcolor;
+            if (targetcolor > avgarray.Average() * double.Max(avgmaxcolors.Average().Value * 0.85 / avgcolors.Average().Value, targetColorThreshold))
             {
                 if (debug)
                 {
-                    if (tested == Int16.MaxValue)
-                        hookbmp.Save("hooked.jpg");
+                    hookbmp.Save("hooked.jpg");
                     Console.WriteLine("hooked");
                 }
                 Thread.Sleep(1500);
+                //Hooked
                 SetCursorPos((hookposition.Left + hookposition.Width / 2) * Resolution.ScreenWidth / Resolution.DeviceWidth, (hookposition.Top + hookposition.Height / 2) * Resolution.ScreenHeight / Resolution.DeviceHeight);
                 //Shift down
                 if (pressShift)
@@ -275,8 +268,7 @@ while (!(fished > 20 && succeedrecord.Average() < 0.3))
             if (tested == Int16.MaxValue)
                 tested = 0;
         }
-        if (((int)method & 1) == 1)
-            avgmaxcolors[fished % avgmaxcolors.Length] = maxcolor;
+        avgmaxcolors[fished % avgmaxcolors.Length] = maxcolor;
     }
     else
         undetedted++;
@@ -290,23 +282,6 @@ while (!(fished > 20 && succeedrecord.Average() < 0.3))
 }
 Console.WriteLine('\r');
 Console.WriteLine("\rHeming exit due to low hook percentage.                                                                   ");
-
-void OnDataAvailable(object? sender, WaveInEventArgs e)
-{
-    int length = e.BytesRecorded / 4;     // 4 bytes per sample (32 bit stereo)
-    double[] result = new double[length];
-
-    for (int i = 0; i < length; i++)
-    {
-        float tmp = BitConverter.ToSingle(e.Buffer, i * 4);
-        result[i] = tmp < 0 ? -tmp : tmp;
-    }
-
-    if (e.BytesRecorded > 0)
-        currentSoundLevel = result.Average();
-    else
-        currentSoundLevel = 0;
-}
 
 enum UpDown
 {
@@ -326,11 +301,10 @@ enum UpDownClick
     Down,
     Click
 }
-enum HootDetectMethod
+enum PredictingMethod
 {
-    Visual = 1,
-    Audio = 2,
-    Both = 3
+    Local = 1,
+    Remote = 2,
 }
 
 [Flags]
